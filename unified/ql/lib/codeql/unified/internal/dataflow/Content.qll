@@ -1,5 +1,7 @@
 private import unified
 private import AllDataFlow
+private import codeql.unified.internal.typeinference.TypeInference as T
+private import codeql.unified.internal.typeinference.TypeInferencePlugin as TP
 
 /**
  * Holds if a MaD access path token of form `name[arg]` exists.
@@ -8,8 +10,20 @@ predicate isAccessPathTokenPresent(string name, string arg) {
   arg = any(FlowSummaryOutput::Private::AccessPathToken tok).getAnArgument(name)
 }
 
+private class ResolvedField extends VariableDeclaration {
+  ResolvedField() { this = T::resolveFieldAccess(_) }
+
+  string getName() {
+    result = super.getName() and
+    not this = any(TP::TupleType tt).getField(_)
+    or
+    this = any(TP::TupleType tt).getField(result)
+  }
+}
+
 private newtype TContent =
   TArrayElement() or
+  TFieldContent(ResolvedField field) or
   TNamedMember(string name) {
     name = any(Identifier id).getValue()
     or
@@ -24,12 +38,16 @@ private newtype TContent =
   TCapturedVariable(CaptureSsaInput::CapturedVariable v)
 
 class Content extends TContent {
+  ResolvedField asField() { this = TFieldContent(result) }
+
   string asNamedMember() { this = TNamedMember(result) }
 
   predicate isArrayElement() { this = TArrayElement() }
 
   string toString() {
     result = this.asNamedMember()
+    or
+    result = this.asField().getName()
     or
     this.isArrayElement() and result = "ArrayElement"
     or
@@ -38,8 +56,16 @@ class Content extends TContent {
 
   LocalVariable asCapturedVariable() { this = TCapturedVariable(result) }
 
-  Location getLocation() { result = this.asCapturedVariable().getLocation() }
+  Location getLocation() {
+    result = this.asCapturedVariable().getLocation()
+    or
+    result = this.asField().getLocation()
+  }
 }
+
+private class TContentApprox = TArrayElement or TNamedMember or TCapturedVariable;
+
+class ContentApprox extends Content, TContentApprox { }
 
 private newtype TContentSet = TSingleton(Content content)
 
@@ -52,10 +78,38 @@ class ContentSet extends TContentSet {
 
   Content getAStoreContent() { result = this.asSingleton() }
 
-  Content getAReadContent() { result = this.asSingleton() }
+  Content getAReadContent() {
+    result = this.asSingleton()
+    or
+    result.asNamedMember() = this.asSingleton().asField().getName()
+    or
+    result.asField().getName() = this.asSingleton().asNamedMember()
+  }
 }
 
 module ContentSet {
+  /**
+   * Gets resolved field content for `access`, falling back to name-based content when resolution
+   * is missing or includes an accessor.
+   */
+  ContentSet member(Expr access) {
+    result.asSingleton().asField() = T::resolveFieldAccess(access)
+    or
+    (
+      not exists(T::resolveFieldAccess(access))
+      or
+      exists(T::resolveAccessorAccess(access))
+    ) and
+    exists(string name |
+      name =
+        [
+          access.(MemberAccessExpr).getMemberName(),
+          access.(UnqualifiedMemberAccess).getMemberName()
+        ] and
+      result = namedMember(name)
+    )
+  }
+
   ContentSet namedMember(string name) { result.asSingleton().asNamedMember() = name }
 
   ContentSet arrayElement() { result.asSingleton().isArrayElement() }

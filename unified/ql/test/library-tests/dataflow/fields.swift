@@ -38,3 +38,26 @@ func summarizedFieldRead() {
     box.field = source("fields.summary")
     sink(TestType.readField(box))  // $ hasValueFlow=fields.summary
 }
+
+class BaseBox {
+    var field: String = ""
+}
+
+class OverridingBox: BaseBox {
+    override var field: String {
+        get { super.field }
+        set { super.field = newValue }
+    }
+}
+
+class UnrelatedBox {
+    var field: String = ""
+}
+
+func overriddenFieldRead(_ b: Bool, _ other: UnrelatedBox) {
+    let base: BaseBox = OverridingBox()
+    base.field = source("fields.override-read")
+    let sub = base as! OverridingBox
+    let q = b ? sub : other
+    sink(q.field)  // $ hasValueFlow=fields.override-read
+}
